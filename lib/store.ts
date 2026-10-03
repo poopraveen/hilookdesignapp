@@ -2,20 +2,30 @@
 import { create } from 'zustand';
 import { catalogByKind } from './catalog';
 import { attachToWall, bounds, rectsOverlap, rotationForNearestWall, uid } from './geometry';
-import { kitchen7x10 } from './presets';
-import type { Design, Item, Kind, Rates, Room, Settings } from './types';
+import { defaultProject, normalizeDesign } from './presets';
+import type { Design, Item, Kind, Project, Rates, Room, Settings } from './types';
 
 export type ViewMode = '2d' | '3d' | 'split';
-const STORAGE_KEY = 'interior-studio:design:v1';
-const WALL_KINDS = new Set(['base', 'wall', 'tall', 'appliance']);
+const STORAGE_KEY = 'hilook:project:v2';
+const LEGACY_KEY = 'interior-studio:design:v1';
 
 interface State {
+  projectName: string;
+  rooms: Design[];      // all rooms; rooms[active] may be stale — `design` is the live copy
+  active: number;
   design: Design;
   selectedId: string | null;
   view: ViewMode;
   past: Design[];
   future: Design[];
-  // actions
+  // rooms
+  switchRoom: (i: number) => void;
+  addRoom: (d: Design) => void;
+  removeRoom: (i: number) => void;
+  renameProject: (name: string) => void;
+  allRooms: () => Design[];
+  loadProject: (p: Project) => void;
+  // design actions
   select: (id: string | null) => void;
   setView: (v: ViewMode) => void;
   checkpoint: () => void;
@@ -33,17 +43,17 @@ interface State {
   redo: () => void;
 }
 
-const clone = (d: Design): Design => structuredClone(d);
+const clone = <T,>(d: T): T => structuredClone(d);
 
-/** Place a new item: units go flush against the nearest wall with their back to it. */
+/** Place a new item: wall-mounted and against-the-wall units go flush to the nearest wall, facing into the room. */
 export function placeNew(kind: Kind, x: number, y: number, room: Room): Item {
   const c = catalogByKind[kind];
   const base: Item = {
     id: uid(), kind, name: c.name, x, y, rot: 0,
     w: c.w, d: c.d, h: c.h, elevation: c.elevation, color: c.color, finish: c.finish,
   };
-  if (c.category === 'opening') return { ...base, ...attachToWall(base, room) };
-  if (WALL_KINDS.has(c.category) || kind === 'wardrobe' || kind === 'tv_unit') {
+  if (c.mount === 'opening') return { ...base, ...attachToWall(base, room) };
+  if (c.mount === 'floor-wall' || c.mount === 'wall') {
     const rot = rotationForNearestWall(x, y, room);
     const it = { ...base, rot };
     const half = it.d / 2;
@@ -51,7 +61,6 @@ export function placeNew(kind: Kind, x: number, y: number, room: Room): Item {
     if (rot === 180) it.y = room.length - half;
     if (rot === 90) it.x = room.width - half;
     if (rot === 270) it.x = half;
-    // keep inside the room along the wall
     const b = bounds(it);
     if (b.x1 < 0) it.x -= b.x1;
     if (b.x2 > room.width) it.x -= b.x2 - room.width;
@@ -63,25 +72,69 @@ export function placeNew(kind: Kind, x: number, y: number, room: Room): Item {
   return { ...base, x: Math.round(x), y: Math.round(y) };
 }
 
-function loadInitial(): Design {
+function loadInitial(): { projectName: string; rooms: Design[]; active: number } {
   if (typeof window !== 'undefined') {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const d = JSON.parse(raw) as Design;
-        if (d && d.version === 1 && Array.isArray(d.items)) return d;
+        const p = JSON.parse(raw) as Project & { active?: number };
+        if (p && p.version === 2 && Array.isArray(p.rooms) && p.rooms.length) {
+          const rooms = p.rooms.map(normalizeDesign);
+          return { projectName: p.name, rooms, active: Math.min(p.active ?? 0, rooms.length - 1) };
+        }
+      }
+      // carry over a design saved by the first version of the app
+      const legacy = window.localStorage.getItem(LEGACY_KEY);
+      if (legacy) {
+        const d = normalizeDesign(JSON.parse(legacy) as Design);
+        const p = defaultProject();
+        p.rooms[0] = { ...d, type: 'kitchen' };
+        return { projectName: p.name, rooms: p.rooms, active: 0 };
       }
     } catch { /* ignore */ }
   }
-  return kitchen7x10();
+  const p = defaultProject();
+  return { projectName: p.name, rooms: p.rooms, active: 0 };
 }
 
+const initial = loadInitial();
+
 export const useStore = create<State>((set, get) => ({
-  design: loadInitial(),
+  projectName: initial.projectName,
+  rooms: initial.rooms,
+  active: initial.active,
+  design: initial.rooms[initial.active],
   selectedId: null,
   view: 'split',
   past: [],
   future: [],
+
+  allRooms: () => {
+    const { rooms, active, design } = get();
+    return rooms.map((r, i) => (i === active ? design : r));
+  },
+  switchRoom: (i) => {
+    const s = get();
+    if (i === s.active || i < 0 || i >= s.rooms.length) return;
+    const rooms = s.allRooms();
+    set({ rooms, active: i, design: rooms[i], selectedId: null, past: [], future: [] });
+  },
+  addRoom: (d) => {
+    const rooms = [...get().allRooms(), normalizeDesign({ ...d, id: uid() })];
+    set({ rooms, active: rooms.length - 1, design: rooms[rooms.length - 1], selectedId: null, past: [], future: [] });
+  },
+  removeRoom: (i) => {
+    const s = get();
+    if (s.rooms.length <= 1) return;
+    const rooms = s.allRooms().filter((_, k) => k !== i);
+    const active = Math.min(i === s.active ? Math.max(0, i - 1) : s.active > i ? s.active - 1 : s.active, rooms.length - 1);
+    set({ rooms, active, design: rooms[active], selectedId: null, past: [], future: [] });
+  },
+  renameProject: (projectName) => set({ projectName }),
+  loadProject: (p) => {
+    const rooms = p.rooms.map(normalizeDesign);
+    set({ projectName: p.name, rooms, active: 0, design: rooms[0], selectedId: null, past: [], future: [] });
+  },
 
   select: (id) => set({ selectedId: id }),
   setView: (view) => set({ view }),
@@ -92,12 +145,21 @@ export const useStore = create<State>((set, get) => ({
     const { design } = get();
     get().checkpoint();
     const room = design.room;
-    let it = placeNew(kind, at?.x ?? room.width / 2, at?.y ?? room.length / 2, room);
-    // nudge along the wall if it lands on something
-    for (let k = 0; k < 20 && !at; k++) {
-      const clash = design.items.some((o) => o.elevation < it.elevation + it.h && it.elevation < o.elevation + o.h && rectsOverlap(bounds(o), bounds(it)));
-      if (!clash) break;
-      it = { ...it, ...(it.rot % 180 === 0 ? { x: it.x + 150 } : { y: it.y + 150 }) };
+    const first = placeNew(kind, at?.x ?? room.width / 2, at?.y ?? room.length / 2, room);
+    let it = first;
+    // When added with the button, slide along until it finds a free spot inside the room.
+    const clashes = (c: Item) => design.items.some((o) => !catalogByKind[o.kind]?.noCollide && catalogByKind[o.kind]?.mount !== 'opening'
+      && o.elevation < c.elevation + c.h && c.elevation < o.elevation + o.h && rectsOverlap(bounds(o), bounds(c)));
+    const inside = (c: Item) => { const b = bounds(c); return b.x1 >= -1 && b.y1 >= -1 && b.x2 <= room.width + 1 && b.y2 <= room.length + 1; };
+    if (!at && clashes(it)) {
+      let found: Item | null = null;
+      for (let k = 1; k <= 40 && !found; k++) {
+        for (const dir of [1, -1]) {
+          const cand = { ...first, ...(first.rot % 180 === 0 ? { x: first.x + dir * k * 100 } : { y: first.y + dir * k * 100 }) };
+          if (inside(cand) && !clashes(cand)) { found = cand; break; }
+        }
+      }
+      it = found ?? first;
     }
     set((s) => ({ design: { ...s.design, items: [...s.design.items, it] }, selectedId: it.id }));
     return it.id;
@@ -134,7 +196,7 @@ export const useStore = create<State>((set, get) => ({
   setSettings: (patch) => set((s) => ({ design: { ...s.design, settings: { ...s.design.settings, ...patch } } })),
   setRates: (fn) => set((s) => ({ design: { ...s.design, rates: fn(structuredClone(s.design.rates)) } })),
   setName: (name) => set((s) => ({ design: { ...s.design, name } })),
-  load: (d) => { get().checkpoint(); set({ design: clone(d), selectedId: null }); },
+  load: (d) => { get().checkpoint(); set((s) => ({ design: normalizeDesign({ ...d, id: s.design.id }), selectedId: null })); },
 
   undo: () => {
     const { past, design, future } = get();
@@ -148,13 +210,18 @@ export const useStore = create<State>((set, get) => ({
   },
 }));
 
+export function currentProject(): Project {
+  const s = useStore.getState();
+  return { version: 2, name: s.projectName, rooms: s.allRooms() };
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 export function startAutosave() {
   return useStore.subscribe((s, prev) => {
-    if (s.design === prev.design) return;
+    if (s.design === prev.design && s.rooms === prev.rooms && s.active === prev.active && s.projectName === prev.projectName) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s.design)); } catch { /* quota */ }
+      try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentProject(), active: useStore.getState().active })); } catch { /* quota */ }
     }, 400);
   });
 }

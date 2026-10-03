@@ -4,7 +4,7 @@ import { Edges, OrbitControls } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { catalogByKind } from '@/lib/catalog';
-import { findCollisions, snapPosition } from '@/lib/geometry';
+import { findCollisions, isOpening, snapPosition } from '@/lib/geometry';
 import { DND_MIME, useStore } from '@/lib/store';
 import type { Item, Kind, Room } from '@/lib/types';
 import { ItemModel, Opening } from './Items3D';
@@ -16,7 +16,6 @@ interface Api {
   raycastPlane: (clientX: number, clientY: number, planeY: number) => THREE.Vector3 | null;
 }
 
-const OPENINGS = new Set(['door', 'window']);
 
 export default function Scene3D() {
   const api = useRef<Api | null>(null);
@@ -80,8 +79,8 @@ export default function Scene3D() {
       <div className="view-tag">3D</div>
       <div className="cam-bar" role="group" aria-label="Camera">
         <button type="button" onClick={() => preset('perspective')}>Corner</button>
-        <button type="button" onClick={() => preset('front')}>Window wall</button>
-        <button type="button" onClick={() => preset('side')}>Hob wall</button>
+        <button type="button" onClick={() => preset('front')}>Front wall</button>
+        <button type="button" onClick={() => preset('side')}>Side wall</button>
         <button type="button" onClick={() => preset('top')}>Top</button>
         <button type="button" onClick={screenshot}>Save image</button>
       </div>
@@ -150,7 +149,7 @@ function SceneContent({ apiRef }: { apiRef: MutableRefObject<Api | null> }) {
 
       <Walls room={room} items={items} />
 
-      {items.filter((i) => !OPENINGS.has(i.kind)).map((it) => (
+      {items.filter((i) => !isOpening(i)).map((it) => (
         <ItemNode key={it.id} it={it} selected={it.id === selectedId} clash={collisions.has(it.id)} apiRef={apiRef} />
       ))}
 
@@ -208,7 +207,7 @@ function ItemNode({ it, selected, clash, apiRef }: { it: Item; selected: boolean
       const cur = s.design.items.find((i) => i.id === it.id);
       if (!cur) return;
       const px = p.x * 1000 - dx, py = p.z * 1000 - dy;
-      const others = s.design.items.filter((o) => o.id !== cur.id && !OPENINGS.has(o.kind) && o.kind !== 'rug');
+      const others = s.design.items.filter((o) => o.id !== cur.id && !isOpening(o) && !catalogByKind[o.kind]?.noCollide);
       const snapped = snapPosition(cur, px, py, s.design.room, others, {
         snap: s.design.settings.snap && !ev.altKey, grid: s.design.settings.gridMm, threshold: 60,
       });
@@ -272,7 +271,7 @@ function Walls({ room, items }: { room: Room; items: Item[] }) {
   return (
     <group>
       {defs.map((def) => {
-        const ops = items.filter((i) => OPENINGS.has(i.kind) && i.rot === def.rot);
+        const ops = items.filter((i) => isOpening(i) && i.rot === def.rot);
         const uStart = -t, uEnd = (def.axis === 'x' ? W : L) + t;
         const intervals = ops
           .map((o) => {

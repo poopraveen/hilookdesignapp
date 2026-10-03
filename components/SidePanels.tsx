@@ -1,11 +1,11 @@
 'use client';
 import { useMemo, useRef } from 'react';
-import { catalogByKind, DEFAULT_RATES, FINISH_IDS, SWATCHES } from '@/lib/catalog';
+import { catalogByKind, CATEGORY_LABEL, DEFAULT_RATES, FINISH_IDS, SWATCHES } from '@/lib/catalog';
 import { findCollisions, mmToFtIn, outOfRoom } from '@/lib/geometry';
-import { estimate, inr } from '@/lib/pricing';
-import { emptyRoom, kitchen7x10 } from '@/lib/presets';
-import { useStore } from '@/lib/store';
-import type { Design, FinishId, Item } from '@/lib/types';
+import { estimate, homeEstimate, inr } from '@/lib/pricing';
+import { ROOM_TEMPLATES } from '@/lib/presets';
+import { currentProject, useStore } from '@/lib/store';
+import type { Design, FinishId, Item, Project } from '@/lib/types';
 
 function Num({ label, value, onChange, min, max, step = 10, suffix = 'mm', disabled }: {
   label: string; value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number; suffix?: string; disabled?: boolean;
@@ -145,7 +145,10 @@ export function Inspector() {
 export function EstimatePanel() {
   const design = useStore((s) => s.design);
   const setSettings = useStore((s) => s.setSettings);
+  const rooms = useStore((s) => s.rooms);
+  const active = useStore((s) => s.active);
   const est = useMemo(() => estimate(design), [design]);
+  const home = useMemo(() => homeEstimate(rooms.map((r, i) => (i === active ? design : r))), [rooms, active, design]);
   const groups = Object.keys(est.byGroup);
 
   const exportCsv = () => {
@@ -158,16 +161,42 @@ export function EstimatePanel() {
     download(new Blob([csv], { type: 'text/csv' }), `${slug(design.name)}-estimate.csv`);
   };
 
+  const exportHomeCsv = () => {
+    const rows: string[][] = [['Room', 'Group', 'Item', 'Qty', 'Unit', 'Rate (INR)', 'Amount (INR)']];
+    for (const p of home.per) {
+      for (const l of p.est.lines) rows.push([p.name, l.group, l.label, String(l.qty), l.unit, String(l.rate), String(l.amount)]);
+      rows.push([p.name, '', 'Installation', '', '', '', String(p.est.installation)]);
+      if (p.est.gst) rows.push([p.name, '', 'GST', '', '', '', String(p.est.gst)]);
+      rows.push([p.name, '', 'Room total', '', '', '', String(p.est.total)], []);
+    }
+    rows.push(['', '', 'Whole home total', '', '', '', String(home.total)]);
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    download(new Blob([csv], { type: 'text/csv' }), `${slug(useStore.getState().projectName)}-home-estimate.csv`);
+  };
+
   return (
     <div className="tab-body">
       <div className="est-total">
-        <span>Estimated total</span>
+        <span>{design.name}</span>
         <strong>{inr(est.total)}</strong>
         <small>{design.settings.gst ? `incl. ${design.rates.gstPct}% GST` : 'GST not included'} · sample rates, edit them in Rates</small>
       </div>
 
+      {home.per.length > 1 && (
+        <fieldset>
+          <legend>Whole home</legend>
+          <table className="totals">
+            <tbody>
+              {home.per.map((p, i) => <tr key={i} className={i === active ? 'here' : ''}><td>{p.name}</td><td>{inr(p.est.total)}</td></tr>)}
+              <tr className="grand"><td>All rooms</td><td>{inr(home.total)}</td></tr>
+            </tbody>
+          </table>
+          <div className="btn-row"><button type="button" onClick={exportHomeCsv}>Download whole-home estimate (CSV)</button></div>
+        </fieldset>
+      )}
+
       <fieldset>
-        <legend>Options</legend>
+        <legend>Options for this room</legend>
         <label className="field">
           <span>Countertop</span>
           <select value={design.settings.countertop} onChange={(e) => setSettings({ countertop: e.target.value as Design['settings']['countertop'] })}>
@@ -205,7 +234,7 @@ export function EstimatePanel() {
         </tbody>
       </table>
       <div className="btn-row">
-        <button type="button" onClick={exportCsv}>Download estimate (CSV)</button>
+        <button type="button" onClick={exportCsv}>Download room estimate (CSV)</button>
         <button type="button" onClick={() => window.print()}>Print</button>
       </div>
     </div>
@@ -224,7 +253,7 @@ export function RatesPanel() {
   );
   return (
     <div className="tab-body">
-      <p className="note">These are sample Chennai-market rates. Replace them with your carpenter&rsquo;s or vendor&rsquo;s quote and the estimate updates instantly. Rates are saved with the design.</p>
+      <p className="note">These are sample Chennai-market rates for this room. Replace them with your carpenter&rsquo;s or vendor&rsquo;s quote and the estimate updates instantly. Woodwork (wardrobes, TV units, cabinets) is priced per sq ft of front area by finish; other items are priced each.</p>
       <fieldset>
         <legend>Cabinet finishes (per sq ft of front area)</legend>
         {FINISH_IDS.map((f) => field(rates.finish[f].label, rates.finish[f].perSqft, (v) => setRates((r) => { r.finish[f].perSqft = v; return r; }), '/sq ft'))}
@@ -234,9 +263,19 @@ export function RatesPanel() {
         {(['quartz', 'granite'] as const).map((k) => field(rates.countertop[k].label, rates.countertop[k].perRft, (v) => setRates((r) => { r.countertop[k].perRft = v; return r; }), '/rft'))}
       </fieldset>
       <fieldset>
-        <legend>Hardware, appliances & furniture</legend>
-        {Object.keys(rates.fixed).map((k) => field(rates.fixed[k].label, rates.fixed[k].amount, (v) => setRates((r) => { r.fixed[k].amount = v; return r; }), k === 'led_per_rft' ? '/rft' : 'each'))}
+        <legend>Hardware & accessories</legend>
+        {Object.keys(rates.fixed).filter((k) => !catalogByKind[k]).map((k) => field(rates.fixed[k].label, rates.fixed[k].amount, (v) => setRates((r) => { r.fixed[k].amount = v; return r; }), k === 'led_per_rft' ? '/rft' : 'each'))}
       </fieldset>
+      {(['appliance', 'living', 'dining', 'bedroom', 'decor', 'kitchen_wall', 'opening'] as const).map((cat) => {
+        const keys = Object.keys(rates.fixed).filter((k) => catalogByKind[k]?.category === cat);
+        if (!keys.length) return null;
+        return (
+          <fieldset key={cat}>
+            <legend>{CATEGORY_LABEL[cat]} (price each)</legend>
+            {keys.map((k) => field(rates.fixed[k].label, rates.fixed[k].amount, (v) => setRates((r) => { r.fixed[k].amount = v; return r; }), 'each'))}
+          </fieldset>
+        );
+      })}
       <fieldset>
         <legend>Charges</legend>
         <label className="rate"><span>Installation & transport</span><div className="num"><input type="number" min={0} max={50} value={rates.installationPct} onChange={(e) => setRates((r) => { r.installationPct = Number(e.target.value) || 0; return r; })} /><em>%</em></div></label>
@@ -250,18 +289,27 @@ export function RatesPanel() {
 // ------------------------------------------------------------------ Room & project
 export function RoomPanel() {
   const design = useStore((s) => s.design);
-  const { setRoom, setSettings, load } = useStore.getState();
+  const { setRoom, setSettings, addRoom, loadProject } = useStore.getState();
   const fileRef = useRef<HTMLInputElement>(null);
   const r = design.room;
 
-  const exportJson = () => download(new Blob([JSON.stringify(design, null, 2)], { type: 'application/json' }), `${slug(design.name)}.json`);
+  const exportRoom = () => download(new Blob([JSON.stringify(design, null, 2)], { type: 'application/json' }), `${slug(design.name)}.json`);
+  const exportProject = () => {
+    const p = currentProject();
+    download(new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }), `${slug(p.name)}.json`);
+  };
+  // Accepts a whole project (all rooms) or a single room design, including files saved by the first version.
   const importJson = (f: File) => {
     f.text().then((t) => {
       try {
-        const d = JSON.parse(t) as Design;
-        if (d.version !== 1 || !Array.isArray(d.items)) throw new Error('bad');
-        load(d);
-      } catch { alert('That file is not a design saved from this app.'); }
+        const data = JSON.parse(t) as Project | Design;
+        if ((data as Project).version === 2 && Array.isArray((data as Project).rooms)) {
+          if (window.confirm('Open this project? It replaces the rooms you have now (they stay in any file you saved).')) loadProject(data as Project);
+          return;
+        }
+        if ((data as Design).version === 1 && Array.isArray((data as Design).items)) { addRoom(data as Design); return; }
+        throw new Error('bad');
+      } catch { window.alert('That file is not a design or project saved from HiLook Design.'); }
     });
   };
 
@@ -292,15 +340,20 @@ export function RoomPanel() {
         </label>
       </fieldset>
       <fieldset>
-        <legend>Project</legend>
+        <legend>Add a room</legend>
         <div className="btn-row wrap">
-          <button type="button" onClick={() => load(kitchen7x10())}>Load 7×10 kitchen</button>
-          <button type="button" onClick={() => load(emptyRoom())}>New empty room</button>
-          <button type="button" onClick={exportJson}>Save design file</button>
-          <button type="button" onClick={() => fileRef.current?.click()}>Open design file</button>
+          {ROOM_TEMPLATES.map((t) => <button key={t.id} type="button" onClick={() => addRoom(t.make())}>{t.label}</button>)}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Files</legend>
+        <div className="btn-row wrap">
+          <button type="button" onClick={exportProject}>Save whole project</button>
+          <button type="button" onClick={exportRoom}>Save this room</button>
+          <button type="button" onClick={() => fileRef.current?.click()}>Import design / project</button>
           <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ''; }} />
         </div>
-        <p className="note">Your work also saves automatically in this browser.</p>
+        <p className="note">Import adds a saved room as a new room, or opens a whole saved project. Your work also saves automatically in this browser.</p>
       </fieldset>
     </div>
   );

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { catalogByKind } from '@/lib/catalog';
 import {
-  attachToWall, bounds, distancesToWalls, findCollisions, mmToFtIn, snapPosition, type SnapGuide,
+  attachToWall, bounds, distancesToWalls, findCollisions, isOpening, mmToFtIn, snapPosition, type SnapGuide,
 } from '@/lib/geometry';
 import { DND_MIME, useStore } from '@/lib/store';
 import type { Item, Kind } from '@/lib/types';
@@ -19,7 +19,8 @@ const C = {
   wall: '#2B3438', ink: '#1D2528', muted: '#5B676C', select: '#2D5BD7', danger: '#C2412D', glass: '#9FC3D6',
 };
 
-const UPPER = new Set(['wall_cab', 'wall_glass', 'wall_shelf', 'loft', 'chimney']);
+/** Wall-hung items high above the floor are drawn faint so the floor plan stays readable. */
+const isUpper = (it: Item) => catalogByKind[it.kind]?.mount === 'wall' && it.elevation >= 900;
 
 function localAxis(rot: number) {
   const r = (rot * Math.PI) / 180;
@@ -67,10 +68,11 @@ export default function PlanCanvas() {
 
   // ---------- hit testing ----------
   const drawOrder = useCallback((list: Item[]) => [...list].sort((a, b) => {
-    const ua = UPPER.has(a.kind) ? 1 : 0;
-    const ub = UPPER.has(b.kind) ? 1 : 0;
-    if (a.kind === 'rug') return -1;
-    if (b.kind === 'rug') return 1;
+    const ua = isUpper(a) ? 1 : 0;
+    const ub = isUpper(b) ? 1 : 0;
+    const ra = catalogByKind[a.kind]?.model === 'rug' ? 1 : 0;
+    const rb = catalogByKind[b.kind]?.model === 'rug' ? 1 : 0;
+    if (ra !== rb) return rb - ra;
     return ua - ub || a.elevation - b.elevation;
   }), []);
 
@@ -154,19 +156,27 @@ export default function PlanCanvas() {
       ctx.translate(X(it.x), Y(it.y));
       ctx.rotate((it.rot * Math.PI) / 180);
 
-      if (it.kind === 'window' || it.kind === 'door') {
+      if (isOpening(it)) {
         ctx.fillStyle = C.floor;
         ctx.fillRect(-w / 2, -(t * s) / 2 - 1, w, t * s + 2);
-        if (it.kind === 'window') {
+        if (cat?.variant === 'window' || cat?.variant === 'french') {
           ctx.strokeStyle = '#4C88AA'; ctx.lineWidth = 1.5;
           for (const f of [-0.5, 0, 0.5]) { ctx.beginPath(); ctx.moveTo(-w / 2, (f * t * s)); ctx.lineTo(w / 2, f * t * s); ctx.stroke(); }
         } else {
           // door leaf and swing into the room (room side of the wall is local +y)
           const inside = (t * s) / 2;
           ctx.strokeStyle = C.ink; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.moveTo(w / 2, inside); ctx.lineTo(w / 2, inside + w); ctx.stroke();
-          ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-          ctx.beginPath(); ctx.arc(w / 2, inside, w, Math.PI / 2, Math.PI); ctx.stroke();
+          if (cat?.variant === 'double') {
+            const r = w / 2;
+            ctx.beginPath(); ctx.moveTo(w / 2, inside); ctx.lineTo(w / 2, inside + r); ctx.moveTo(-w / 2, inside); ctx.lineTo(-w / 2, inside + r); ctx.stroke();
+            ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.arc(w / 2, inside, r, Math.PI / 2, Math.PI); ctx.stroke();
+            ctx.beginPath(); ctx.arc(-w / 2, inside, r, 0, Math.PI / 2); ctx.stroke();
+          } else {
+            ctx.beginPath(); ctx.moveTo(w / 2, inside); ctx.lineTo(w / 2, inside + w); ctx.stroke();
+            ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.arc(w / 2, inside, w, Math.PI / 2, Math.PI); ctx.stroke();
+          }
           ctx.setLineDash([]);
         }
         if (sel) { ctx.strokeStyle = C.select; ctx.lineWidth = 2; ctx.strokeRect(-w / 2, -(t * s) / 2, w, t * s); }
@@ -174,7 +184,7 @@ export default function PlanCanvas() {
         continue;
       }
 
-      const upper = UPPER.has(it.kind);
+      const upper = isUpper(it);
       ctx.globalAlpha = upper ? (sel ? 0.55 : 0.14) : 1;
 
       if (cat?.hasCounter && settings.countertop !== 'none') {
@@ -216,7 +226,7 @@ export default function PlanCanvas() {
       const r = bounds(it);
       const sw = (r.x2 - r.x1) * s;
       const sh = (r.y2 - r.y1) * s;
-      if (Math.min(sw, sh) > 26 && Math.max(sw, sh) > 60 && it.kind !== 'rug' && (!upper || sel)) {
+      if (Math.min(sw, sh) > 26 && Math.max(sw, sh) > 60 && cat?.model !== 'rug' && (!upper || sel)) {
         ctx.fillStyle = isDark(it.color) && !cat?.hasCounter && !upper ? '#FFFFFF' : C.ink;
         ctx.font = '500 11px "Schibsted Grotesk", system-ui, sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -240,7 +250,7 @@ export default function PlanCanvas() {
           ctx.beginPath(); ctx.rect(X(h.x) - 6, Y(h.y) - 6, 12, 12); ctx.fill(); ctx.stroke();
         }
       }
-      if (settings.showDims && sel.kind !== 'door' && sel.kind !== 'window') {
+      if (settings.showDims && !isOpening(sel)) {
         const r = bounds(sel);
         const dist = distancesToWalls(sel, room);
         ctx.strokeStyle = C.select; ctx.fillStyle = C.select; ctx.lineWidth = 1;
@@ -341,11 +351,11 @@ export default function PlanCanvas() {
       const it = st.design.items.find((i) => i.id === d.id);
       if (!it) return;
       setCursor('grabbing');
-      if (it.kind === 'door' || it.kind === 'window') {
+      if (isOpening(it)) {
         st.updateItem(it.id, attachToWall({ ...it, x: x - d.dx, y: y - d.dy }, room));
         return;
       }
-      const others = st.design.items.filter((o) => o.id !== it.id && o.kind !== 'door' && o.kind !== 'window' && o.kind !== 'rug');
+      const others = st.design.items.filter((o) => o.id !== it.id && !isOpening(o) && !catalogByKind[o.kind]?.noCollide);
       const snapped = snapPosition(it, x - d.dx, y - d.dy, room, others, {
         snap: settings.snap && !e.altKey, grid: settings.gridMm, threshold: 10 / view.scale,
       });
@@ -442,14 +452,7 @@ function isDark(hex: string) {
 }
 
 function shortName(it: Item) {
-  const map: Partial<Record<Kind, string>> = {
-    base_drawer: 'Drawers', base_door: 'Base unit', base_sink: 'Sink', base_hob: 'Hob', base_corner: 'Magic corner',
-    base_pullout: 'Pull-out', wall_cab: 'Wall unit', wall_glass: 'Glass unit', wall_shelf: 'Shelf', loft: 'Loft',
-    tall_pantry: 'Pantry', tall_oven: 'Oven tower', fridge: 'Fridge', chimney: 'Chimney', dishwasher: 'Dishwasher',
-    microwave: 'Microwave', dining_table: 'Dining table', chair: 'Chair', sofa: 'Sofa', bed: 'Bed',
-    wardrobe: 'Wardrobe', tv_unit: 'TV unit', plant: 'Plant',
-  };
-  return `${map[it.kind] ?? it.name} ${Math.round(it.w)}`;
+  return `${catalogByKind[it.kind]?.short ?? it.name} ${Math.round(it.w)}`;
 }
 
 function fitText(ctx: CanvasRenderingContext2D, text: string, max: number) {
@@ -479,75 +482,114 @@ function tick(ctx: CanvasRenderingContext2D, x: number, y: number, vertical = fa
   ctx.stroke();
 }
 
-/** Plan symbols, drawn in the item's local frame (front = +y). */
+/** Plan symbols, drawn in the item's local frame (front = +y), chosen by the item's model style. */
 function drawSymbol(ctx: CanvasRenderingContext2D, it: Item, w: number, d: number, s: number) {
+  const cat = catalogByKind[it.kind];
+  if (!cat) return;
+  const L = cat.layout;
   ctx.strokeStyle = 'rgba(29,37,40,.7)';
   ctx.lineWidth = 1;
-  switch (it.kind) {
-    case 'base_sink': {
-      const bw = Math.min(w - 60 * s, 600 * s), bd = d - 160 * s;
-      ctx.fillStyle = '#C9CED1';
-      ctx.beginPath(); ctx.roundRect(-bw / 2, -d / 2 + 70 * s, bw, bd, 8 * s); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, -d / 2 + 70 * s + bd / 2, 30 * s, 0, Math.PI * 2); ctx.stroke();
+  const cross = () => { ctx.beginPath(); ctx.moveTo(-w / 2, -d / 2); ctx.lineTo(w / 2, d / 2); ctx.moveTo(w / 2, -d / 2); ctx.lineTo(-w / 2, d / 2); ctx.stroke(); };
+  const diag = () => { ctx.beginPath(); ctx.moveTo(-w / 2, -d / 2); ctx.lineTo(w / 2, d / 2); ctx.stroke(); };
+  const legs = (inset: number) => { ctx.fillStyle = 'rgba(0,0,0,.35)'; for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) ctx.fillRect(sx * (w / 2 - inset * s) - 3, sy * (d / 2 - inset * s) - 3, 6, 6); };
+
+  switch (cat.model) {
+    case 'cabinet': {
+      if (L?.extra === 'sink') {
+        const two = it.w >= 1100;
+        const bw = Math.min((two ? w / 2 : w) - 60 * s, 600 * s), bd = d - 160 * s;
+        ctx.fillStyle = '#C9CED1';
+        for (const cx of two ? [-w / 4, w / 4] : [0]) {
+          ctx.beginPath(); ctx.roundRect(cx - bw / 2, -d / 2 + 70 * s, bw, bd, 8 * s); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.arc(cx, -d / 2 + 70 * s + bd / 2, 30 * s, 0, Math.PI * 2); ctx.stroke();
+        }
+      } else if (L?.extra === 'hob') {
+        ctx.fillStyle = '#2A2C2E';
+        const hw = Math.min(w - 100 * s, 760 * s), hd = Math.min(d - 100 * s, 450 * s);
+        ctx.fillRect(-hw / 2, -hd / 2, hw, hd);
+        ctx.strokeStyle = '#9AA0A5';
+        const pts = it.kind === 'base_hob4' ? [[-hw / 4, -hd / 4, 60], [hw / 4, -hd / 4, 60], [-hw / 4, hd / 4, 60], [hw / 4, hd / 4, 60]] : [[-hw / 3, 0, 70], [0, 0, 95], [hw / 3, 0, 70]];
+        for (const [cx, cy, r] of pts) { ctx.beginPath(); ctx.arc(cx, cy, r * s, 0, Math.PI * 2); ctx.stroke(); }
+      } else if (it.kind === 'base_corner' || it.kind === 'base_carousel') {
+        ctx.beginPath(); ctx.arc(-w / 2, -d / 2, Math.min(w, d) * 0.8, 0, Math.PI / 2); ctx.stroke();
+      } else if (it.h >= 1500 && cat.mount !== 'wall') {
+        diag();
+      }
+      // door/drawer split lines on the front edge
+      const n = L?.rows ? 1 : (L?.cols ?? 1);
+      for (let i = 1; i < n; i++) { const x = -w / 2 + (w * i) / n; ctx.beginPath(); ctx.moveTo(x, d / 2 - 6); ctx.lineTo(x, d / 2); ctx.stroke(); }
       break;
     }
-    case 'base_hob': {
-      ctx.fillStyle = '#2A2C2E';
-      const hw = Math.min(w - 100 * s, 760 * s), hd = Math.min(d - 100 * s, 450 * s);
-      ctx.fillRect(-hw / 2, -hd / 2, hw, hd);
-      ctx.strokeStyle = '#9AA0A5';
-      for (const [cx, r] of [[-hw / 3, 70], [0, 95], [hw / 3, 70]] as [number, number][]) { ctx.beginPath(); ctx.arc(cx, 0, r * s, 0, Math.PI * 2); ctx.stroke(); }
+    case 'appliance':
+      if (cat.variant === 'fridge' || cat.variant === 'fridge1' || cat.variant === 'dishwasher' || cat.variant?.startsWith('washer')) cross();
+      if (cat.variant?.startsWith('washer')) { ctx.beginPath(); ctx.arc(0, 0, Math.min(w, d) * 0.3, 0, Math.PI * 2); ctx.stroke(); }
+      if (cat.variant === 'chimney') ctx.strokeRect(-w / 4, -d / 2, w / 2, d * 0.45);
       break;
-    }
-    case 'base_corner': {
-      ctx.beginPath(); ctx.arc(-w / 2, -d / 2, Math.min(w, d) * 0.8, 0, Math.PI / 2); ctx.stroke();
+    case 'table':
+      if (cat.variant?.startsWith('round')) { ctx.beginPath(); ctx.arc(0, 0, Math.min(w, d) / 2 - 2, 0, Math.PI * 2); ctx.stroke(); }
+      else { ctx.strokeRect(-w / 2 + 20 * s, -d / 2 + 20 * s, w - 40 * s, d - 40 * s); if (cat.variant !== 'desk') legs(60); }
       break;
-    }
-    case 'fridge': case 'dishwasher': {
-      ctx.beginPath(); ctx.moveTo(-w / 2, -d / 2); ctx.lineTo(w / 2, d / 2); ctx.moveTo(w / 2, -d / 2); ctx.lineTo(-w / 2, d / 2); ctx.stroke();
+    case 'chair': case 'stool':
+      ctx.fillStyle = 'rgba(0,0,0,.25)';
+      if (cat.model === 'chair') ctx.fillRect(-w / 2, -d / 2, w, 80 * s);
       break;
-    }
-    case 'chimney': {
-      ctx.strokeRect(-w / 4, -d / 2, w / 2, d * 0.45);
-      break;
-    }
-    case 'dining_table': {
-      ctx.strokeRect(-w / 2 + 20 * s, -d / 2 + 20 * s, w - 40 * s, d - 40 * s);
-      break;
-    }
-    case 'chair': {
-      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(-w / 2, -d / 2, w, 80 * s);
-      break;
-    }
     case 'sofa': {
+      const seats = Number(cat.variant ?? 3);
+      const arm = (seats === 1 ? 140 : 180) * s;
       ctx.fillStyle = 'rgba(0,0,0,.18)';
       ctx.fillRect(-w / 2, -d / 2, w, 220 * s);
-      ctx.fillRect(-w / 2, -d / 2, 180 * s, d); ctx.fillRect(w / 2 - 180 * s, -d / 2, 180 * s, d);
+      ctx.fillRect(-w / 2, -d / 2, arm, d); ctx.fillRect(w / 2 - arm, -d / 2, arm, d);
+      for (let i = 1; i < seats; i++) { const x = -w / 2 + arm + ((w - 2 * arm) * i) / seats; ctx.beginPath(); ctx.moveTo(x, -d / 2 + 220 * s); ctx.lineTo(x, d / 2); ctx.stroke(); }
       break;
     }
-    case 'bed': {
+    case 'lsofa': {
+      const sd = 900 * s;
+      ctx.fillStyle = 'rgba(0,0,0,.18)';
+      ctx.fillRect(-w / 2, -d / 2, w, 220 * s);
+      ctx.fillRect(w / 2 - 180 * s, -d / 2, 180 * s, d);
+      ctx.fillRect(-w / 2, -d / 2, 180 * s, sd);
+      ctx.clearRect(0, 0, 0, 0);
+      ctx.fillStyle = '#F7F7F5';
+      ctx.fillRect(-w / 2, -d / 2 + sd, w - sd, d - sd);
+      ctx.strokeRect(-w / 2, -d / 2 + sd, w - sd, d - sd);
+      break;
+    }
+    case 'bed': case 'bunk': {
+      if (cat.variant === 'diwan') { ctx.fillStyle = '#B8475A'; ctx.fillRect(-w / 2 + 20 * s, -d / 2 + 20 * s, w - 40 * s, d - 40 * s); break; }
       ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(-w / 2, -d / 2, w, 80 * s);
       ctx.fillStyle = '#F4F2EE';
       ctx.fillRect(-w / 2 + 60 * s, -d / 2 + 80 * s, w - 120 * s, d - 140 * s);
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(-w / 2 + 120 * s, -d / 2 + 140 * s, w / 2 - 180 * s, 300 * s);
-      ctx.fillRect(60 * s, -d / 2 + 140 * s, w / 2 - 180 * s, 300 * s);
+      if (it.w < 1100) ctx.fillRect(-w / 2 + 120 * s, -d / 2 + 140 * s, w - 240 * s, 300 * s);
+      else { ctx.fillRect(-w / 2 + 120 * s, -d / 2 + 140 * s, w / 2 - 180 * s, 300 * s); ctx.fillRect(60 * s, -d / 2 + 140 * s, w / 2 - 180 * s, 300 * s); }
+      ctx.fillStyle = 'rgba(157,175,160,.6)'; ctx.fillRect(-w / 2 + 60 * s, -d / 2 + d * 0.45, w - 120 * s, d * 0.45);
+      if (cat.model === 'bunk') { ctx.setLineDash([4, 3]); ctx.strokeRect(-w / 2 + 4, -d / 2 + 4, w - 8, d - 8); ctx.setLineDash([]); }
       break;
     }
-    case 'wardrobe': case 'tall_pantry': case 'tall_oven': {
-      ctx.beginPath(); ctx.moveTo(-w / 2, -d / 2); ctx.lineTo(w / 2, d / 2); ctx.stroke();
+    case 'shelf': {
+      const n = Math.max(1, Math.round(w / (300 * s) / 2));
+      for (let i = 1; i < n; i++) { const x = -w / 2 + (w * i) / n; ctx.beginPath(); ctx.moveTo(x, -d / 2); ctx.lineTo(x, d / 2); ctx.stroke(); }
       break;
     }
-    case 'plant': {
-      ctx.fillStyle = '#3F6A3B';
+    case 'panel':
+      for (let x = -w / 2; x < w / 2; x += Math.max(3, 40 * s)) { ctx.beginPath(); ctx.moveTo(x, -d / 2); ctx.lineTo(x, d / 2); ctx.stroke(); }
+      break;
+    case 'partition':
+      for (let x = -w / 2; x < w / 2; x += Math.max(4, 150 * s)) { ctx.beginPath(); ctx.moveTo(x, -d / 2); ctx.lineTo(x, d / 2); ctx.stroke(); }
+      break;
+    case 'plant': case 'beanbag': case 'pouf': case 'lamp':
+      ctx.fillStyle = cat.model === 'plant' ? '#3F6A3B' : it.color;
       ctx.beginPath(); ctx.arc(0, 0, Math.min(w, d) / 2, 0, Math.PI * 2); ctx.fill();
+      if (cat.model === 'lamp') { ctx.fillStyle = '#FFF4D6'; ctx.beginPath(); ctx.arc(0, 0, Math.min(w, d) / 4, 0, Math.PI * 2); ctx.fill(); }
       break;
-    }
-    case 'rug': {
+    case 'rug':
       ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2;
-      ctx.strokeRect(-w / 2 + 80 * s, -d / 2 + 80 * s, w - 160 * s, d - 160 * s);
+      if (cat.variant === 'round') { ctx.beginPath(); ctx.arc(0, 0, Math.min(w, d) / 2 - 60 * s, 0, Math.PI * 2); ctx.stroke(); }
+      else ctx.strokeRect(-w / 2 + 80 * s, -d / 2 + 80 * s, w - 160 * s, d - 160 * s);
       break;
-    }
+    case 'curtain':
+      for (let x = -w / 2; x < w / 2; x += Math.max(4, 90 * s)) { ctx.beginPath(); ctx.arc(x + 45 * s, 0, 45 * s, Math.PI, 0); ctx.stroke(); }
+      break;
     default: break;
   }
 }

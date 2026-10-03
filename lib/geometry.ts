@@ -1,3 +1,4 @@
+import { catalogByKind } from './catalog';
 import type { Item, Room } from './types';
 
 export interface Rect { x1: number; y1: number; x2: number; y2: number }
@@ -21,17 +22,17 @@ function verticalOverlap(a: Item, b: Item) {
   return a.elevation < b.elevation + b.h - 1 && b.elevation < a.elevation + a.h - 1;
 }
 
-const IGNORE_COLLISION = new Set(['rug', 'door', 'window']);
+const ignores = (it: Item) => !!catalogByKind[it.kind]?.noCollide || catalogByKind[it.kind]?.mount === 'opening';
 
 /** Ids of items that clash with another item (same floor area and height band). */
 export function findCollisions(items: Item[]): Set<string> {
   const out = new Set<string>();
   for (let i = 0; i < items.length; i++) {
     const a = items[i];
-    if (IGNORE_COLLISION.has(a.kind)) continue;
+    if (ignores(a)) continue;
     for (let j = i + 1; j < items.length; j++) {
       const b = items[j];
-      if (IGNORE_COLLISION.has(b.kind)) continue;
+      if (ignores(b)) continue;
       if (verticalOverlap(a, b) && rectsOverlap(bounds(a), bounds(b))) {
         out.add(a.id);
         out.add(b.id);
@@ -132,5 +133,7 @@ export const mmToFtIn = (mm: number) => {
   const inch = totalIn - ft * 12;
   return `${ft}'-${inch}"`;
 };
+
+export const isOpening = (it: Pick<Item, 'kind'>) => catalogByKind[it.kind]?.mount === 'opening';
 
 export const uid = () => Math.random().toString(36).slice(2, 9);

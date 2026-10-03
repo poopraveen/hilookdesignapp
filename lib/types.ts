@@ -1,31 +1,54 @@
 // All dimensions are millimetres. Plan coordinates: origin = inner top-left corner
 // of the room, x to the right, y downwards (towards the door). 3D: X = x, Z = y, Y up.
 
-export type Category = 'base' | 'wall' | 'tall' | 'appliance' | 'furniture' | 'opening';
+export type Category =
+  | 'kitchen_base' | 'kitchen_wall' | 'kitchen_tall' | 'appliance'
+  | 'living' | 'dining' | 'bedroom' | 'storage' | 'decor' | 'opening';
 
-export type Kind =
-  | 'base_door' | 'base_drawer' | 'base_sink' | 'base_hob' | 'base_corner' | 'base_pullout'
-  | 'wall_cab' | 'wall_glass' | 'wall_shelf' | 'loft'
-  | 'tall_pantry' | 'tall_oven'
-  | 'fridge' | 'chimney' | 'dishwasher' | 'microwave'
-  | 'dining_table' | 'chair' | 'sofa' | 'bed' | 'wardrobe' | 'tv_unit' | 'rug' | 'plant'
-  | 'door' | 'window';
+export type Kind = string;
 
-export type FinishId = 'ply_laminate' | 'ply_acrylic' | 'hdhmr_pu' | 'fluted_glass' | 'veneer';
+export type RoomType = 'kitchen' | 'hall' | 'bedroom' | 'other';
+
+/** How an item is placed: against a wall on the floor, hung on a wall, free-standing, or cut into a wall. */
+export type Mount = 'floor-wall' | 'wall' | 'free' | 'opening';
+
+/** Which 3D/plan drawing style an item uses. */
+export type Model =
+  | 'cabinet' | 'appliance' | 'table' | 'chair' | 'stool' | 'sofa' | 'lsofa' | 'bed' | 'bunk'
+  | 'shelf' | 'panel' | 'partition' | 'plant' | 'rug' | 'lamp' | 'mirror' | 'curtain' | 'art'
+  | 'beanbag' | 'pouf' | 'opening' | 'box';
+
+export type FinishId =
+  | 'ply_laminate' | 'ply_acrylic' | 'hdhmr_pu' | 'fluted_glass' | 'veneer'
+  | 'mdf_laminate' | 'glass_profile' | 'cnc_jaali';
+
+export interface CabinetLayout {
+  cols?: number;          // doors side by side
+  rows?: number[];        // drawer stack, relative heights, top first
+  extra?: 'sink' | 'hob' | 'glass' | 'open' | 'oven' | 'niche' | 'mirror' | 'arch' | 'lift';
+  plinth?: boolean;
+  handles?: 'gola' | 'bar' | 'none';
+}
 
 export interface CatalogItem {
   kind: Kind;
   name: string;
+  short: string;          // label on the plan
   category: Category;
-  w: number;            // width (along the front)
-  d: number;            // depth (front to back)
-  h: number;            // height
-  elevation: number;    // bottom height above floor
+  model: Model;
+  variant?: string;       // model-specific variation (fridge, tv, ac, round, storage…)
+  layout?: CabinetLayout; // for model 'cabinet'
+  mount: Mount;
+  w: number;              // width (along the front)
+  d: number;              // depth (front to back)
+  h: number;              // height
+  elevation: number;      // bottom height above floor
   color: string;
-  finish?: FinishId;    // for cabinets priced per sq ft of front area
-  hasCounter?: boolean; // base units carry the countertop
-  addOnKey?: string;    // key into rates.fixed for appliance/accessory included with the unit
-  fixedKey?: string;    // whole item priced as a fixed rate (appliances, furniture)
+  finish?: FinishId;      // priced per sq ft of front area
+  hasCounter?: boolean;   // base units carry the countertop
+  addOnKey?: string;      // hardware/appliance included with the unit (rates.fixed)
+  price?: number;         // whole item priced as a fixed rate (rates.fixed[kind])
+  noCollide?: boolean;
   minW?: number;
   maxW?: number;
   description: string;
@@ -75,9 +98,17 @@ export interface Rates {
 
 export interface Design {
   version: 1;
+  id?: string;
+  type?: RoomType;
   name: string;
   room: Room;
   items: Item[];
   settings: Settings;
   rates: Rates;
+}
+
+export interface Project {
+  version: 2;
+  name: string;
+  rooms: Design[];
 }

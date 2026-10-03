@@ -2,11 +2,19 @@
 
 **HiLook Design** is a local interior and modular-kitchen planner built with Next.js. Drag components onto a 2D floor plan, see them live in 3D (WebGL), and get a running cost estimate in rupees.
 
-It opens with a 7 ft × 10 ft L-shaped "Sage & Oak" kitchen already laid out.
+It opens with a three-room project, each room already laid out:
+
+- **Kitchen 7×10** — the L-shaped "Sage & Oak" modular kitchen
+- **Hall 12×16** — TV wall with fluted panel, L-sofa, pooja unit, shoe rack
+- **Bedroom 11×12** — queen bed, sliding wardrobe with loft, dresser
+
+Add more rooms from templates (kitchen, hall, bedroom, or empty) with **+ Add room**. The estimate shows each room and the whole home.
 
 ## Run it on your computer
 
-You need **Node.js 20 or newer** ([nodejs.org](https://nodejs.org)).
+**Windows, quickest:** download this repo (Code → Download ZIP), unzip it, and double-click **`start.bat`**. It installs packages on the first run and opens <http://localhost:3000>.
+
+Or with a terminal — you need **Node.js 20 or newer** ([nodejs.org](https://nodejs.org)):
 
 ```bash
 git clone https://github.com/poopraveen/hilookdesignapp.git
@@ -20,6 +28,11 @@ Open <http://localhost:3000>.
 For a faster production build: `npm run build` then `npm start`.
 
 ## What you can do
+
+**Components (100+, Indian market style)**
+- Kitchen: drawer, sink, hob, magic corner, LeMans, thali basket, cylinder trolley, wicker, dustbin, island, wall/glass/profile/lift-up units, loft, tall pantry, oven tower, fridge niche.
+- Living / hall: sofas (3/2-seater, L-shaped, sofa-cum-bed), recliner, diwan, coffee/centre/side tables, TV units, fluted TV panel, crockery, bookshelf, pooja unit, jaali partition.
+- Dining, bedroom (king/queen/single/bunk beds, hydraulic storage, sliding/hinged/mirror wardrobes, dresser, study), storage, appliances (fridges, chimney, washer, AC, TVs), decor (rugs, plants, lamps, mirror, curtains, art), doors and windows.
 
 **2D plan (HTML canvas)**
 - Drag a component from the left panel onto the plan, or press **Add**. Cabinets land flush against the nearest wall, facing into the room.
@@ -43,7 +56,7 @@ For a faster production build: `npm run build` then `npm start`.
 
 **Project**
 - Autosaves in the browser.
-- Save or open a design as a `.json` file.
+- Save the whole project or a single room as `.json`, and import either one (an imported room is added as a new room).
 - Change the room size, ceiling height, wall thickness and colours.
 - Undo / redo.
 
@@ -79,9 +92,6 @@ lib/
 
 ### Add a new component
 
-1. Add a `Kind` in `lib/types.ts`.
-2. Add a catalogue entry (size, colour, finish, rate key) in `lib/catalog.ts`.
-3. Give it a 3D model in `components/Items3D.tsx`. Unknown kinds fall back to a box.
-4. Optionally give it a plan symbol in `drawSymbol` in `components/PlanCanvas.tsx`.
+Add one entry to `CATALOG` in `lib/catalog.ts`: size, colour, how it mounts (`floor-wall`, `wall`, `free`, `opening`), a `model` style (`cabinet`, `sofa`, `bed`, `table`, `appliance`…) and either a `finish` (priced per sq ft) or a `price` (priced each). The 3D model, plan symbol, thumbnail and rate all follow from those fields.
 
 All dimensions are in millimetres.
